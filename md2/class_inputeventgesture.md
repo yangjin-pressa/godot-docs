@@ -1,0 +1,13 @@
+**InputEventGesture**  
+- **Description**: Abstract base class for touch gestures.  
+- **Inherits**: `InputEventWithModifiers < InputEventFromWindow < InputEvent < Resource < RefCounted < Object`  
+- **Inherited By**: `InputEventMagnifyGesture, InputEventPanGesture`  
+- **Tutorials**:  
+  - `Using InputEvent`  
+- **Properties**:  
+  - `position` (Type: `Vector2`, Default: `Vector2(0, 0)`)  
+- **Property Description**:  
+  - `position` is the local gesture position relative to the Viewport. If used in `Control._gui_input()`, it is relative to the current Control.  
+- **Methods**:  
+  - `set_position(value: Vector2)`: Sets the position of the gesture. (Virtual method)  
+  - `get_position()`: Gets the position of the gesture. (Const method)

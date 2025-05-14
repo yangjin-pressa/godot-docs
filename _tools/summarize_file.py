@@ -21,29 +21,24 @@ from agents import (
     set_tracing_disabled,
 )
 
-# 🛠️ 配置日志格式
+# Add force rewrite control variable
+FORCE_REWRITE = False  # Set to True to force reprocessing of existing files
+
 def log(message: str, level: str = "INFO"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] [{level}] {message}")
 
-# 🛠️ 设置输入输出目录
-INPUT_DIR = "E:\Git\godot-docs\md"
+INPUT_DIR = "E:\Git\godot-docs\classes2md"
 OUTPUT_DIR = "E:\Git\godot-docs\md2"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 load_dotenv()
-
-# 📦 环境变量方式配置模型信息
 BASE_URL = os.getenv("EXAMPLE_BASE_URL")
 API_KEY = os.getenv("EXAMPLE_API_KEY")
 MODEL_NAME = os.getenv("EXAMPLE_MODEL_NAME")
-
-# ❌ 禁用 tracing
 set_tracing_disabled(True)
 
-# 🔍 检查Ollama服务状态
 def check_ollama_running(retries=3, delay=2) -> bool:
-    """检查Ollama服务是否已启动"""
     for _ in range(retries):
         try:
             response = requests.get(
@@ -57,9 +52,7 @@ def check_ollama_running(retries=3, delay=2) -> bool:
         time.sleep(delay)
     return False
 
-# 🚀 启动Ollama服务
 def start_ollama():
-    """尝试启动Ollama服务"""
     try:
         subprocess.Popen(
             ["ollama", "serve"],
@@ -77,28 +70,8 @@ def start_ollama():
         print(f"❌ Failed to start Ollama: {str(e)}")
         sys.exit(1)
 
-# 🛑 卸载Ollama模型
-def unload_ollama_model():
-    """卸载当前使用的Ollama模型"""
-    try:
-        if MODEL_NAME:
-            response = requests.delete(
-                url=f"http://localhost:11434/api/delete",
-                json={"name": MODEL_NAME},
-                timeout=10
-            )
-            if response.status_code == 200:
-                log(f"Successfully unloaded model: {MODEL_NAME}")
-            else:
-                log(f"Failed to unload model: {response.text}", "WARNING")
-    except Exception as e:
-        log(f"Model unloading error: {str(e)}", "ERROR")
-
-
-# 🔌 初始化 Ollama OpenAI client
 client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
 
-# 🧠 自定义 ModelProvider
 class CustomModelProvider(ModelProvider):
     def get_model(self, model_name: str | None) -> Model:
         return OpenAIChatCompletionsModel(
@@ -108,7 +81,6 @@ class CustomModelProvider(ModelProvider):
 
 CUSTOM_MODEL_PROVIDER = CustomModelProvider()
 
-# ✍️ 创建 Agent (英文版指令)
 agent = Agent(
     name="MarkdownSummarizer",
     instructions=(
@@ -131,14 +103,20 @@ def clean_output(output: str) -> str:
     return re.sub(r"<think>.*?</think>\s*", "", output, flags=re.DOTALL)
 
 async def summarize_file(file_path: str, output_path: str, pbar: tqdm_asyncio):
-    """文件处理任务"""
     file_name = os.path.basename(file_path)
+    
+    # Check if output file already exists and skip if not forcing rewrite
+    if os.path.exists(output_path) and not FORCE_REWRITE:
+        log(f"Skipped (already exists): {file_name}")
+        pbar.update(1)
+        pbar.set_description(f"Skipped {file_name[:15]}...")
+        return
+    
     try:
         log(f"Processing: {file_name}")
         
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-
         result = await Runner.run(
             agent,
             input=content,
@@ -159,7 +137,6 @@ async def summarize_file(file_path: str, output_path: str, pbar: tqdm_asyncio):
         pbar.set_description(f"Processed {file_name[:15]}...")
 
 async def main():
-    """主处理流程"""
     files = [
         f for f in os.listdir(INPUT_DIR)
         if f.endswith(".md")
@@ -169,8 +146,15 @@ async def main():
         log("No Markdown files found", "WARNING")
         return
 
+    # Log whether force rewrite is enabled
+    if FORCE_REWRITE:
+        log("Force rewrite mode enabled - will reprocess all files")
+    else:
+        log("Skip existing files mode enabled - will skip already processed files")
+        
     log(f"Starting batch processing ({len(files)} files)")
-    
+    files_processed = 0
+    batch_size = 5
     with tqdm_asyncio(
         total=len(files),
         desc="📊 Progress",
@@ -179,29 +163,36 @@ async def main():
         mininterval=0.5
     ) as pbar:
         sem = asyncio.Semaphore(10)
-        
-        async def wrapped_task(filename):
-            async with sem:
-                await summarize_file(
-                    file_path=os.path.join(INPUT_DIR, filename),
-                    output_path=os.path.join(OUTPUT_DIR, filename),
-                    pbar=pbar
-                )
-        
-        tasks = [wrapped_task(f) for f in files]
-        await asyncio.gather(*tasks)
-    
+        while files_processed < len(files):
+            batch_files = files[files_processed:files_processed + batch_size]
+            if not check_ollama_running():
+                start_ollama()
+            tasks = [
+                wrapped_task(f, sem, pbar)
+                for f in batch_files
+            ]
+            await asyncio.gather(*tasks)
+            
+            files_processed += batch_size
+            if files_processed > len(files):
+                files_processed = len(files)
     log("All files processed")
+
+async def wrapped_task(filename, sem, pbar):
+    async with sem:
+        await summarize_file(
+            file_path=os.path.join(INPUT_DIR, filename),
+            output_path=os.path.join(OUTPUT_DIR, filename),
+            pbar=pbar
+        )
 
 def shutdown_handler(signum, frame):
     log("Shutting down gracefully...", "WARNING")
-    unload_ollama_model()
     sys.exit(0)
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
-
     try:
         if not check_ollama_running():
             start_ollama()
@@ -210,5 +201,3 @@ if __name__ == "__main__":
         log("Operation interrupted by user", "WARNING")
     except Exception as e:
         log(f"Abnormal termination: {str(e)}", "ERROR")
-    finally:
-        unload_ollama_model()
